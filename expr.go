@@ -136,7 +136,7 @@ func EnableExpressionParsing(p *Parser, name string, bopinf BinOpeInfo) error {
 			err := &Error{}
 			ln, col := lineInfo(r.SS, r.Pos)
 			msg := "expression syntax error"
-			err.Details = append(err.Details, ErrorDetail{ln, col, msg})
+			err.Details = append(err.Details, ErrorDetail{ln, col, msg, ""})
 			return err
 		}
 

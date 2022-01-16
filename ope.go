@@ -222,13 +222,20 @@ func (o *zeroOrMore) parseCore(s string, p int, v *Values, c *context, d Any) (l
 		saveVs := v.Vs
 		saveTs := v.Ts
 		chl := o.ope.parse(s, p+l, v, c, d)
+		//fmt.Println(v)
+		// fmt.Println(d)
 		if fail(chl) {
+			// fmt.Println(v)
 			v.Vs = saveVs
 			v.Ts = saveTs
-			c.errorPos = saveErrorPos
+			// fmt.Println(c.errorPos)
+			if c.errorPos < saveErrorPos { // JM 2022 ... dodal ta IF in primeri ki jih probam vsi delajo sedaj!!??
+				c.errorPos = saveErrorPos
+			}
 			break
 		}
 		l += chl
+		// fmt.Println("RETUNR ZOM: " + strconv.Itoa(l))
 	}
 	return
 }
@@ -513,11 +520,12 @@ func (o *user) accept(v visitor) {
 // Reference
 type reference struct {
 	opeBase
-	name string
-	iarg int
-	args []operator
-	pos  int
-	rule *Rule
+	name  string
+	iarg  int
+	args  []operator
+	iargs []int
+	pos   int
+	rule  *Rule
 }
 
 func (o *reference) parseCore(s string, p int, v *Values, c *context, d Any) (l int) {
@@ -526,7 +534,13 @@ func (o *reference) parseCore(s string, p int, v *Values, c *context, d Any) (l 
 		if o.rule.Parameters == nil {
 			// Definition
 			l = o.rule.parse(s, p, v, c, d)
+			if l >= 0 {
+				//fmt.Println(o.rule.Label() + "***" + strconv.Itoa(l))
+				//fmt.Println(o.rule.Message)
+				//fmt.Println(o.rule.Name)
+			}
 		} else {
+			// fmt.Println(o.name + "+++")
 			// Macro
 			vis := &findReference{
 				args:   c.topArg(),

@@ -1,16 +1,25 @@
 package peg
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // Error detail
 type ErrorDetail struct {
-	Ln  int
-	Col int
-	Msg string
+	Ln   int
+	Col  int
+	Msg  string
+	Line string
 }
 
 func (d ErrorDetail) String() string {
-	return fmt.Sprintf("%d:%d %s", d.Ln, d.Col, d.Msg)
+	str := "Loader error at line: " + strconv.Itoa(d.Ln) + "\n" + d.Line + "\n"
+	str = str + strings.Repeat("-", d.Col-1)
+	str = str + strings.Repeat("^", 1)
+	return str
+	// return fmt.Sprintf("%d:%d %s", d.Ln, d.Col, d.Msg)
 }
 
 // Error
@@ -20,7 +29,7 @@ type Error struct {
 
 func (e *Error) Error() string {
 	d := e.Details[0]
-	return fmt.Sprintf("%d:%d %s", d.Ln, d.Col, d.Msg)
+	return d.String()
 }
 
 // Action
@@ -75,13 +84,20 @@ func (r *Rule) Parse(s string, d Any) (l int, val Any, err error) {
 	if fail(l) || l != len(s) {
 		var pos int
 		var msg string
+		var line string
 		if fail(l) {
 			if c.messagePos > -1 {
 				pos = c.messagePos
 				msg = c.message
 			} else {
-				msg = "syntax error"
 				pos = c.errorPos
+				ln, _ := lineInfo(s, pos)
+				lineStart, lineEnd := printLine(s, ln)
+				//fmt.Println(lineStart)
+				//fmt.Println(lineEnd)
+				line = s[lineStart:lineEnd]
+				//fmt.Println(lineEnd)
+				msg = "Syntax error" // JM2022
 			}
 		} else {
 			msg = "not exact match"
@@ -89,10 +105,29 @@ func (r *Rule) Parse(s string, d Any) (l int, val Any, err error) {
 		}
 		ln, col := lineInfo(s, pos)
 		err = &Error{}
-		err.(*Error).Details = append(err.(*Error).Details, ErrorDetail{ln, col, msg})
+		err.(*Error).Details = append(err.(*Error).Details, ErrorDetail{ln, col, msg, line})
 	}
 
 	return
+}
+
+func printLine(s string, line int) (int, int) {
+	currentLine := 1
+	currentOffset := 0
+	lineLength := 0
+
+	for currentLine < line && currentOffset < len(s) {
+		if s[currentOffset] == '\n' {
+			currentLine++
+		}
+		currentOffset++
+	}
+
+	for currentOffset+lineLength < len(s) && s[currentOffset+lineLength] != '\n' {
+		lineLength++
+	}
+
+	return currentOffset, currentOffset + lineLength
 }
 
 func (o *Rule) Label() string {
@@ -170,6 +205,14 @@ func (r *Rule) isToken() bool {
 		r.Ope.accept(r.tokenChecker)
 	}
 	return r.tokenChecker.isToken()
+}
+
+func (r *Rule) hasTokenBoundary() bool {
+	if r.tokenChecker == nil {
+		r.tokenChecker = &tokenChecker{}
+		r.Ope.accept(r.tokenChecker)
+	}
+	return r.tokenChecker.hasTokenBoundary
 }
 
 // lineInfo
