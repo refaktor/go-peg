@@ -2,7 +2,6 @@ package peg
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -15,21 +14,94 @@ type ErrorDetail struct {
 }
 
 func (d ErrorDetail) String() string {
-	str := "Loader error at line: " + strconv.Itoa(d.Ln) + "\n" + d.Line + "\n"
-	str = str + strings.Repeat("-", d.Col-1)
-	str = str + strings.Repeat("^", 1)
+	// Create the error message with better visualization
+	str := fmt.Sprintf("Error at line %d, column %d: %s\n", d.Ln, d.Col, d.Msg)
+
+	// Add the line of code where the error occurred
+	if len(d.Line) > 0 {
+		str += d.Line + "\n"
+
+		// Create pointer to the exact error position
+		pointer := strings.Repeat(" ", d.Col-1) + "^"
+		str += pointer
+	}
+
 	return str
-	// return fmt.Sprintf("%d:%d %s", d.Ln, d.Col, d.Msg)
 }
+
+// Error types
+type ErrorType int
+
+const (
+	SyntaxErrorType ErrorType = iota
+	GrammarErrorType
+	SemanticErrorType
+)
 
 // Error
 type Error struct {
 	Details []ErrorDetail
+	Type    ErrorType
 }
 
 func (e *Error) Error() string {
 	d := e.Details[0]
 	return d.String()
+}
+
+// GetSuggestions provides helpful suggestions based on error context
+func (e *Error) GetSuggestions() []string {
+	var suggestions []string
+
+	for _, detail := range e.Details {
+		// Check for common error patterns and provide suggestions
+		if strings.Contains(detail.Msg, "expected") {
+			// For expected token errors, suggest possible corrections
+			suggestions = append(suggestions, "Check if you have the correct syntax for this expression")
+		} else if strings.Contains(detail.Msg, "not exact match") {
+			suggestions = append(suggestions, "The input was partially parsed but did not match the entire grammar")
+		}
+	}
+
+	return suggestions
+}
+
+// Create more specific error types
+type SyntaxError struct {
+	BaseError Error
+	Expected  []string
+}
+
+// Implement the error interface for SyntaxError
+func (e *SyntaxError) Error() string {
+	return e.BaseError.Error()
+}
+
+// GetSuggestions provides helpful suggestions based on error context for SyntaxError
+func (e *SyntaxError) GetSuggestions() []string {
+	var suggestions []string
+
+	// Add suggestions based on expected tokens
+	if len(e.Expected) > 0 {
+		suggestions = append(suggestions, fmt.Sprintf("Expected one of: %s", strings.Join(e.Expected, ", ")))
+	}
+
+	// Add general suggestions
+	suggestions = append(suggestions, "Check if you have the correct syntax for this expression")
+	suggestions = append(suggestions, "Verify that your grammar rules are correctly defined")
+
+	return suggestions
+}
+
+type GrammarError struct {
+	BaseError Error
+	RuleName  string
+	ErrorType string // e.g., "left recursion", "undefined rule", etc.
+}
+
+// Implement the error interface for GrammarError
+func (e *GrammarError) Error() string {
+	return e.BaseError.Error()
 }
 
 // Action
@@ -93,19 +165,38 @@ func (r *Rule) Parse(s string, d Any) (l int, val Any, err error) {
 				pos = c.errorPos
 				ln, _ := lineInfo(s, pos)
 				lineStart, lineEnd := printLine(s, ln)
-				//fmt.Println(lineStart)
-				//fmt.Println(lineEnd)
 				line = s[lineStart:lineEnd]
-				//fmt.Println(lineEnd)
-				msg = "Syntax error" // JM2022
+
+				// Enhanced error message with expected tokens
+				if len(c.expectedTokens) > 0 {
+					msg = fmt.Sprintf("Syntax error: expected %s", strings.Join(c.expectedTokens, ", "))
+				} else {
+					msg = "Syntax error"
+				}
 			}
 		} else {
 			msg = "not exact match"
 			pos = l
 		}
 		ln, col := lineInfo(s, pos)
-		err = &Error{}
-		err.(*Error).Details = append(err.(*Error).Details, ErrorDetail{ln, col, msg, line})
+
+		// Create appropriate error type
+		syntaxErr := &Error{
+			Type: SyntaxErrorType,
+		}
+
+		if strings.Contains(msg, "expected") {
+			syntaxErr.Details = append(syntaxErr.Details, ErrorDetail{ln, col, msg, line})
+			err = &SyntaxError{
+				BaseError: *syntaxErr,
+				Expected:  c.expectedTokens,
+			}
+		} else {
+			syntaxErr.Details = append(syntaxErr.Details, ErrorDetail{ln, col, msg, line})
+			err = syntaxErr
+		}
+
+		// Details are already added to the error
 	}
 
 	return

@@ -1,6 +1,9 @@
 package peg
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 const (
 	WhitespceRuleName = "%whitespace"
@@ -460,12 +463,115 @@ func getExpressionParsingOptions(options map[string][]string) (name string, info
 	return
 }
 
+// TracingOptions defines the configuration for parser tracing
+type TracingOptions struct {
+	ShowRuleEntry    bool   // Show when entering a rule
+	ShowRuleExit     bool   // Show when exiting a rule
+	ShowTokens       bool   // Show tokens as they are parsed
+	ShowErrorContext bool   // Show context around errors
+	OutputFormat     string // Format for output: "text" or "json"
+}
+
 // Parser
 type Parser struct {
-	Grammar     map[string]*Rule
-	start       string
-	TracerEnter func(name string, s string, v *Values, d Any, p int)
-	TracerLeave func(name string, s string, v *Values, d Any, p int, l int)
+	Grammar         map[string]*Rule
+	start           string
+	TracerEnter     func(name string, s string, v *Values, d Any, p int)
+	TracerLeave     func(name string, s string, v *Values, d Any, p int, l int)
+	RecoveryEnabled bool            // Enable error recovery
+	MaxErrors       int             // Maximum number of errors to report before stopping
+	TracingOptions  *TracingOptions // Options for tracing
+}
+
+// findNextMeaningfulToken attempts to find the next token to continue parsing after an error
+func findNextMeaningfulToken(s string, pos int, delimiters []string) int {
+	if pos >= len(s) {
+		return pos
+	}
+
+	// Skip whitespace
+	for pos < len(s) && (s[pos] == ' ' || s[pos] == '\t' || s[pos] == '\n' || s[pos] == '\r') {
+		pos++
+	}
+
+	// If we reached the end, return
+	if pos >= len(s) {
+		return pos
+	}
+
+	// Check for delimiters
+	for _, delimiter := range delimiters {
+		if pos+len(delimiter) <= len(s) && s[pos:pos+len(delimiter)] == delimiter {
+			return pos + len(delimiter)
+		}
+	}
+
+	// If no delimiter found, skip to the next whitespace or end
+	start := pos
+	for pos < len(s) && s[pos] != ' ' && s[pos] != '\t' && s[pos] != '\n' && s[pos] != '\r' {
+		pos++
+	}
+
+	// If we didn't move, just advance one character to avoid infinite loops
+	if pos == start {
+		pos++
+	}
+
+	return pos
+}
+
+// EnableTracing sets up tracing with the specified options
+func (p *Parser) EnableTracing(options *TracingOptions) {
+	p.TracingOptions = options
+
+	if options == nil {
+		// Default options if none provided
+		options = &TracingOptions{
+			ShowRuleEntry:    true,
+			ShowRuleExit:     true,
+			ShowTokens:       false,
+			ShowErrorContext: true,
+			OutputFormat:     "text",
+		}
+	}
+
+	// Set up tracers based on options
+	if options.ShowRuleEntry || options.ShowRuleExit {
+		indent := func(level int) string {
+			s := ""
+			for level > 0 {
+				s = s + "  "
+				level--
+			}
+			return s
+		}
+
+		level := 0
+		prevPos := 0
+
+		if options.ShowRuleEntry {
+			p.TracerEnter = func(name string, s string, v *Values, d Any, p int) {
+				var backtrack string
+				if p < prevPos {
+					backtrack = "*"
+				}
+				fmt.Printf("%d:%d%s\t%s%s\n", p, level, backtrack, indent(level), name)
+				prevPos = p
+				level++
+			}
+		}
+
+		if options.ShowRuleExit {
+			p.TracerLeave = func(name string, s string, v *Values, d Any, p int, l int) {
+				level--
+				if l >= 0 {
+					fmt.Printf("%d:%d\t%s%s (SUCCESS, len=%d)\n", p, level, indent(level), name, l)
+				} else {
+					fmt.Printf("%d:%d\t%s%s (FAILED)\n", p, level, indent(level), name)
+				}
+			}
+		}
+	}
 }
 
 func NewParser(s string) (p *Parser, err error) {
@@ -591,10 +697,133 @@ func (p *Parser) Parse(s string, d Any) (err error) {
 	return
 }
 
+// ParseWithRecovery parses the input string with error recovery
+func (p *Parser) ParseWithRecovery(s string, d Any) (errs []error) {
+	if !p.RecoveryEnabled {
+		err := p.Parse(s, d)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return
+	}
+
+	// Set default max errors if not specified
+	maxErrors := p.MaxErrors
+	if maxErrors <= 0 {
+		maxErrors = 10 // Default to 10 errors
+	}
+
+	pos := 0
+	for pos < len(s) {
+		// Try to parse from current position
+		r := p.Grammar[p.start]
+		r.TracerEnter = p.TracerEnter
+		r.TracerLeave = p.TracerLeave
+
+		l, _, err := r.Parse(s[pos:], d)
+
+		if err == nil {
+			// Successful parse
+			pos += l
+		} else {
+			// Error occurred
+			errs = append(errs, err)
+
+			if len(errs) >= maxErrors {
+				break
+			}
+
+			// Try to recover by finding next meaningful token
+			// Common delimiters in PEG grammars
+			delimiters := []string{";", "}", "{", "(", ")", ",", "=", "<-"}
+			newPos := findNextMeaningfulToken(s, pos+1, delimiters)
+
+			// If we couldn't advance, just move one character to avoid infinite loops
+			if newPos <= pos {
+				newPos = pos + 1
+			}
+
+			pos = newPos
+		}
+	}
+
+	return
+}
+
 func (p *Parser) ParseAndGetValue(s string, d Any) (val Any, err error) {
 	r := p.Grammar[p.start]
 	r.TracerEnter = p.TracerEnter
 	r.TracerLeave = p.TracerLeave
 	_, val, err = r.Parse(s, d)
+
+	// Show error context if enabled
+	if err != nil && p.TracingOptions != nil && p.TracingOptions.ShowErrorContext {
+		fmt.Println("\nError Context:")
+		fmt.Println(err.Error())
+
+		// If it's a syntax error with expected tokens, show suggestions
+		if syntaxErr, ok := err.(*SyntaxError); ok {
+			fmt.Println("\nSuggestions:")
+			for _, suggestion := range syntaxErr.GetSuggestions() {
+				fmt.Println("- " + suggestion)
+			}
+		}
+	}
+
+	return
+}
+
+// ParseAndGetValueWithRecovery parses the input string with error recovery and returns the value
+func (p *Parser) ParseAndGetValueWithRecovery(s string, d Any) (val Any, errs []error) {
+	if !p.RecoveryEnabled {
+		var err error
+		val, err = p.ParseAndGetValue(s, d)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return
+	}
+
+	// Set default max errors if not specified
+	maxErrors := p.MaxErrors
+	if maxErrors <= 0 {
+		maxErrors = 10 // Default to 10 errors
+	}
+
+	pos := 0
+	for pos < len(s) {
+		// Try to parse from current position
+		r := p.Grammar[p.start]
+		r.TracerEnter = p.TracerEnter
+		r.TracerLeave = p.TracerLeave
+
+		l, v, err := r.Parse(s[pos:], d)
+
+		if err == nil {
+			// Successful parse
+			pos += l
+			val = v // Use the last successful value
+		} else {
+			// Error occurred
+			errs = append(errs, err)
+
+			if len(errs) >= maxErrors {
+				break
+			}
+
+			// Try to recover by finding next meaningful token
+			// Common delimiters in PEG grammars
+			delimiters := []string{";", "}", "{", "(", ")", ",", "=", "<-"}
+			newPos := findNextMeaningfulToken(s, pos+1, delimiters)
+
+			// If we couldn't advance, just move one character to avoid infinite loops
+			if newPos <= pos {
+				newPos = pos + 1
+			}
+
+			pos = newPos
+		}
+	}
+
 	return
 }

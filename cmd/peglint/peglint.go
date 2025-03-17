@@ -6,8 +6,9 @@ import (
 	"io/ioutil"
 	"os"
 	"runtime/pprof"
+	"strings"
 
-	"github.com/yhirose/go-peg"
+	peg "github.com/yhirose/go-peg"
 )
 
 var usageMessage = `usage: peglint [-ast] [-opt] [-trace] [-f path] [-s string] [grammar path]
@@ -48,43 +49,58 @@ func check(err error) {
 
 func pcheck(err error) {
 	if perr, ok := err.(*peg.Error); ok {
+		fmt.Println("Error details:")
 		for _, d := range perr.Details {
 			fmt.Println(d)
 		}
+
+		// Show suggestions if available
+		suggestions := perr.GetSuggestions()
+		if len(suggestions) > 0 {
+			fmt.Println("\nSuggestions:")
+			for _, suggestion := range suggestions {
+				fmt.Println("- " + suggestion)
+			}
+		}
+
+		os.Exit(1)
+	} else if syntaxErr, ok := err.(*peg.SyntaxError); ok {
+		fmt.Println("Syntax error details:")
+		fmt.Println(syntaxErr.Error())
+
+		// Show expected tokens and suggestions
+		fmt.Println("\nExpected tokens:", strings.Join(syntaxErr.Expected, ", "))
+
+		// Show suggestions
+		suggestions := syntaxErr.GetSuggestions()
+		if len(suggestions) > 0 {
+			fmt.Println("\nSuggestions:")
+			for _, suggestion := range suggestions {
+				fmt.Println("- " + suggestion)
+			}
+		}
+
 		os.Exit(1)
 	}
 }
 
 func SetupTracer(p *peg.Parser) {
-	indent := func(level int) string {
-		s := ""
-		for level > 0 {
-			s = s + "  "
-			level--
-		}
-		return s
-	}
+	// Use the new tracing options
+	p.EnableTracing(&peg.TracingOptions{
+		ShowRuleEntry:    true,
+		ShowRuleExit:     true,
+		ShowTokens:       false,
+		ShowErrorContext: true,
+		OutputFormat:     "text",
+	})
 
-	fmt.Println("pos:lev\trule/ope")
-	fmt.Println("-------\t--------")
-
-	level := 0
-	prevPos := 0
-
-	p.TracerEnter = func(name string, s string, v *peg.Values, d peg.Any, p int) {
-		var backtrack string
-		if p < prevPos {
-			backtrack = "*"
-		}
-		fmt.Printf("%d:%d%s\t%s%s\n", p, level, backtrack, indent(level), name)
-		prevPos = p
-		level++
-	}
-
-	p.TracerLeave = func(name string, s string, v *peg.Values, d peg.Any, p int, l int) {
-		level--
-	}
+	fmt.Println("Tracing enabled. Parser will show rule entry/exit and error context.")
 }
+
+var (
+	recoveryFlag  = flag.Bool("recovery", false, "enable error recovery")
+	maxErrorsFlag = flag.Int("max-errors", 10, "maximum number of errors to report")
+)
 
 func main() {
 	flag.Usage = usage
@@ -128,6 +144,13 @@ func main() {
 			parser.EnableAst()
 		}
 
+		// Enable error recovery if requested
+		if *recoveryFlag {
+			parser.RecoveryEnabled = true
+			parser.MaxErrors = *maxErrorsFlag
+			fmt.Printf("Error recovery enabled (max errors: %d)\n", parser.MaxErrors)
+		}
+
 		if *profPath != "" {
 			f, err := os.Create(*profPath)
 			check(err)
@@ -135,16 +158,54 @@ func main() {
 			defer pprof.StopCPUProfile()
 		}
 
-		val, err := parser.ParseAndGetValue(source, nil)
-		pcheck(err)
+		if *recoveryFlag {
+			// Use recovery mode parsing
+			val, errs := parser.ParseAndGetValueWithRecovery(source, nil)
+			if len(errs) > 0 {
+				fmt.Printf("Parsing completed with %d errors\n", len(errs))
+				for i, err := range errs {
+					fmt.Printf("\nError #%d:\n", i+1)
+					if syntaxErr, ok := err.(*peg.SyntaxError); ok {
+						fmt.Println(syntaxErr.Error())
 
-		if *astFlag || *optFlag {
-			ast := val.(*peg.Ast)
-			if *optFlag {
-				opt := peg.NewAstOptimizer(nil)
-				ast = opt.Optimize(ast, nil)
+						suggestions := syntaxErr.GetSuggestions()
+						if len(suggestions) > 0 {
+							fmt.Println("\nSuggestions:")
+							for _, suggestion := range suggestions {
+								fmt.Println("- " + suggestion)
+							}
+						}
+					} else if pegErr, ok := err.(*peg.Error); ok {
+						fmt.Println(pegErr.Error())
+					} else {
+						fmt.Println(err)
+					}
+				}
+			} else {
+				fmt.Println("Parsing completed successfully")
 			}
-			fmt.Println(ast)
+
+			if val != nil && (*astFlag || *optFlag) {
+				ast := val.(*peg.Ast)
+				if *optFlag {
+					opt := peg.NewAstOptimizer(nil)
+					ast = opt.Optimize(ast, nil)
+				}
+				fmt.Println(ast)
+			}
+		} else {
+			// Use normal parsing
+			val, err := parser.ParseAndGetValue(source, nil)
+			pcheck(err)
+
+			if *astFlag || *optFlag {
+				ast := val.(*peg.Ast)
+				if *optFlag {
+					opt := peg.NewAstOptimizer(nil)
+					ast = opt.Optimize(ast, nil)
+				}
+				fmt.Println(ast)
+			}
 		}
 	}
 }

@@ -17,6 +17,9 @@ If you need a C++ version, please see [*cpp-peglib*](https://github.com/yhirose/
  * Parameterized rule or Macro
  * Word expression: `%word`
  * AST generation
+ * Enhanced error reporting with suggestions
+ * Error recovery during parsing
+ * Detailed tracing for debugging
 
 ### Usage
 
@@ -164,10 +167,73 @@ val := eval(ast)
 fmt.Println(val) // Output: -3
 ```
 
+Error Reporting and Recovery
+---------------------------
+
+The library provides enhanced error reporting with detailed context and suggestions:
+
+```go
+parser, _ := NewParser(grammar)
+_, err := parser.ParseAndGetValue(input, nil)
+if err != nil {
+    fmt.Println(err) // Shows detailed error with line/column and pointer
+    
+    // For syntax errors, you can get suggestions
+    if syntaxErr, ok := err.(*SyntaxError); ok {
+        for _, suggestion := range syntaxErr.GetSuggestions() {
+            fmt.Println("- " + suggestion)
+        }
+    }
+}
+```
+
+You can also enable error recovery to continue parsing after errors:
+
+```go
+parser, _ := NewParser(grammar)
+parser.RecoveryEnabled = true
+parser.MaxErrors = 10 // Maximum number of errors to report
+val, errs := parser.ParseAndGetValueWithRecovery(input, nil)
+for _, err := range errs {
+    fmt.Println(err)
+}
+```
+
+Tracing for Debugging
+--------------------
+
+Enable detailed tracing to debug your grammar:
+
+```go
+parser, _ := NewParser(grammar)
+parser.EnableTracing(&TracingOptions{
+    ShowRuleEntry:    true,
+    ShowRuleExit:     true,
+    ShowTokens:       false,
+    ShowErrorContext: true,
+    OutputFormat:     "text",
+})
+```
+
+Using peglint
+------------
+
+The `peglint` tool now supports error recovery and better error reporting:
+
+```bash
+# Basic usage
+peglint grammar.peg -f source.txt
+
+# With error recovery
+peglint -recovery -max-errors 5 grammar.peg -f source.txt
+
+# With tracing
+peglint -trace grammar.peg -f source.txt
+```
+
 TODO
 ----
 
- * Better error handling
  * Memoization (Packrat parsing)
 
 License

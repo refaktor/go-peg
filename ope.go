@@ -1,6 +1,7 @@
 package peg
 
 import (
+	"fmt"
 	"reflect"
 	"sync"
 )
@@ -88,12 +89,28 @@ type context struct {
 
 	tracerEnter func(name string, s string, v *Values, d Any, p int)
 	tracerLeave func(name string, s string, v *Values, d Any, p int, l int)
+
+	// Track expected tokens at error position
+	expectedTokens []string
 }
 
 func (c *context) setErrorPos(p int) {
 	if c.errorPos < p {
 		c.errorPos = p
+		// Clear expected tokens when setting a new error position
+		c.expectedTokens = nil
 	}
+}
+
+// Add expected token to the context
+func (c *context) addExpectedToken(token string) {
+	// Only add if not already present
+	for _, t := range c.expectedTokens {
+		if t == token {
+			return
+		}
+	}
+	c.expectedTokens = append(c.expectedTokens, token)
 }
 
 func (c *context) push() *Values {
@@ -362,6 +379,7 @@ func (o *literalString) parseCore(s string, p int, v *Values, c *context, d Any)
 	for ; l < len(o.lit); l++ {
 		if p+l == len(s) || s[p+l] != o.lit[l] {
 			c.setErrorPos(p)
+			c.addExpectedToken(fmt.Sprintf("'%s'", o.lit))
 			return -1
 		}
 	}
@@ -408,6 +426,7 @@ func (o *characterClass) parseCore(s string, p int, v *Values, c *context, d Any
 	// TODO: UTF8 support
 	if len(s)-p < 1 {
 		c.setErrorPos(p)
+		c.addExpectedToken(fmt.Sprintf("[%s]", o.chars))
 		l = -1
 		return
 	}
@@ -429,6 +448,7 @@ func (o *characterClass) parseCore(s string, p int, v *Values, c *context, d Any
 		}
 	}
 	c.setErrorPos(p)
+	c.addExpectedToken(fmt.Sprintf("[%s]", o.chars))
 	l = -1
 	return
 }
@@ -446,6 +466,7 @@ func (o *anyCharacter) parseCore(s string, p int, v *Values, c *context, d Any) 
 	// TODO: UTF8 support
 	if len(s)-p < 1 {
 		c.setErrorPos(p)
+		c.addExpectedToken("any character")
 		l = -1
 		return
 	}
